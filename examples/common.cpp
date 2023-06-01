@@ -282,6 +282,8 @@ bool gpt_params_parse(int argc, char ** argv, gpt_params & params) {
             params.multiline_input = true;
         } else if (arg == "--color") {
             params.use_color = true;
+        } else if (arg == "--debugtts") {
+            params.debugtts = true;
         } else if (arg == "--mlock") {
             params.use_mlock = true;
         } else if (arg == "--gpu-layers" || arg == "-ngl" || arg == "--n-gpu-layers") {
@@ -427,6 +429,7 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     fprintf(stderr, "  -b N, --batch-size N  batch size for prompt processing (default: %d)\n", params.n_batch);
     fprintf(stderr, "  --perplexity          compute perplexity over the prompt\n");
     fprintf(stderr, "  --keep                number of tokens to keep from the initial prompt (default: %d, -1 = all)\n", params.n_keep);
+    fprintf(stderr, "  --debugtts            enables TTS console output to debug TTS voice generation (default: disabled)\n");
     if (llama_mlock_supported()) {
         fprintf(stderr, "  --mlock               force system to keep model in RAM rather than swapping or compressing\n");
     }

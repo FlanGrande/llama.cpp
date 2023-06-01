@@ -32,6 +32,7 @@ static console_state con_st;
 static llama_context ** g_ctx;
 
 static bool is_interacting = false;
+static bool debug_TTS = false;
 
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__)) || defined (_WIN32)
 void sigint_handler(int signo) {
@@ -134,6 +135,10 @@ int main(int argc, char ** argv) {
         return 0;
     }
 
+    if(params.debugtts)
+    {
+        debug_TTS = true;
+    }
 
     std::string path_session = params.path_prompt_cache;
     std::vector<llama_token> session_tokens;
@@ -308,6 +313,9 @@ int main(int argc, char ** argv) {
     int n_remain           = params.n_predict;
     int n_consumed         = 0;
     int n_session_consumed = 0;
+
+    bool has_original_prompt_been_read = false;
+    std::string AI_answer_to_TTS = "";
 
     // the first thing we will do is to output the prompt, so set color accordingly
     console_set_color(con_st, CONSOLE_COLOR_PROMPT);
@@ -509,7 +517,9 @@ int main(int argc, char ** argv) {
         // display text
         if (input_echo) {
             for (auto id : embd) {
-                printf("%s", llama_token_to_str(ctx, id));
+                std::string next_tokenized_string = llama_token_to_str(ctx, id);
+                AI_answer_to_TTS += next_tokenized_string;
+                printf("%s", next_tokenized_string.c_str());
             }
             fflush(stdout);
         }
@@ -551,6 +561,72 @@ int main(int argc, char ** argv) {
             }
 
             if (n_past > 0 && is_interacting) {
+                if(has_original_prompt_been_read)
+                {
+                    int numbers[] = {273, 267, 226, 241, 260, 298, 335, 293};
+                    int arraySize = sizeof(numbers) / sizeof(numbers[0]);
+
+                    // Seed the random number generator
+                    std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
+                    // Generate a random index within the array bounds
+                    int randomIndex = std::rand() % arraySize;
+
+                    // Select a random number from the array
+                    int randomNumber = numbers[randomIndex];
+
+                    // Replace "Flan-PC:" from AI_answer_to_TTS with ""
+                    AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-PC:"), 8, "");
+                    AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-Human:"), 11, "");
+
+                    // Sanitize AI_answer_to_TTS
+                    AI_answer_to_TTS.erase(std::remove_if(AI_answer_to_TTS.begin(), AI_answer_to_TTS.end(), [](unsigned char c) {
+                        return !(std::isalnum(c) || c == '?' || c == '!' || c == '.' || c == ',' || c == ' ' || c == '\'' || c == '-');
+                    }), AI_answer_to_TTS.end());
+
+                    // Run tts --text "AI_answer_to_TTS" on powershell to hear the voice
+                    std::string generate_TTS_command = "cmd /C \"tts --text \"" + AI_answer_to_TTS + "\" --model_name \"tts_models/en/vctk/vits\" --speaker_idx p" + std::to_string(randomNumber);
+                    std::string play_TTS_command = "powershell -c (New-Object Media.SoundPlayer \".\\tts_output.wav\").PlaySync() ^| out-null\"";
+                    std::string full_command = generate_TTS_command + " && " + play_TTS_command;
+                    STARTUPINFO si = { sizeof(si) };
+                    si.dwFlags = STARTF_USESHOWWINDOW;
+                    si.wShowWindow = SW_HIDE;
+                    PROCESS_INFORMATION pi;
+
+                    // This decides whether console output is shown or not
+                    if(debug_TTS)
+                    {
+                        std::cout << std::endl;
+                        CreateProcess(NULL, const_cast<char*>(full_command.c_str()), NULL, NULL, FALSE, NULL, NULL, NULL, &si, &pi);
+                        std::cout << std::endl;
+                    }
+                    else
+                    {
+                        CreateProcess(NULL, const_cast<char*>(full_command.c_str()), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
+                    }
+                    
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    AI_answer_to_TTS = "";
+                }
+                else
+                {
+                    // Run tts --text "AI_answer_to_TTS" on powershell to hear the voice
+                    std::string generate_TTS_command = "cmd /C \"tts --text \"I am ready to start\"";
+                    std::string play_TTS_command = "powershell -c (New-Object Media.SoundPlayer \".\\tts_output.wav\").PlaySync() ^| out-null\"";
+                    std::string full_command = generate_TTS_command + " && " + play_TTS_command;
+                    STARTUPINFO si = { sizeof(si) };
+                    si.dwFlags = STARTF_USESHOWWINDOW;
+                    si.wShowWindow = SW_HIDE;
+                    PROCESS_INFORMATION pi;
+                    CreateProcess(NULL, const_cast<char*>(full_command.c_str()), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+
+                    has_original_prompt_been_read = true;
+                    AI_answer_to_TTS = "";
+                }
+
                 if (params.instruct) {
                     printf("\n> ");
                 }
