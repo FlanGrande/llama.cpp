@@ -32,7 +32,8 @@ static console_state con_st;
 static llama_context ** g_ctx;
 
 static bool is_interacting = false;
-static bool debug_TTS = false;
+PROCESS_INFORMATION whisper_process_info;
+HANDLE whisper_process_stdoutRead, whisper_process_stdoutWrite;
 
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__)) || defined (_WIN32)
 void sigint_handler(int signo) {
@@ -48,6 +49,131 @@ void sigint_handler(int signo) {
     }
 }
 #endif
+
+int generate_random_speaker_id() {
+    int speaker_idxs[] = {273, 267, 226, 241, 260, 298, 335, 293};
+    int arraySize = sizeof(speaker_idxs) / sizeof(speaker_idxs[0]);
+
+    // Seed the random number generator
+    std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
+    // Generate a random index within the array bounds
+    int randomIndex = std::rand() % arraySize;
+
+    // Select a random number from the array
+    return speaker_idxs[randomIndex];
+}
+
+void start_tts(std::string text_to_read, bool debug_tts = false) {
+    // Run tts --text "AI_answer_to_TTS" on powershell to hear the voice
+    int speaker_id = generate_random_speaker_id();
+    std::string generate_TTS_command = "cmd /C \"tts --text \"" + text_to_read + "\" --model_name \"tts_models/en/vctk/vits\" --use_cuda true --speaker_idx p" + std::to_string(speaker_id);
+    std::string play_TTS_command = "powershell -c (New-Object Media.SoundPlayer \".\\tts_output.wav\").PlaySync() ^| out-null\"";
+    std::string start_TTS_command = generate_TTS_command + " && " + play_TTS_command;
+
+    STARTUPINFO si = { sizeof(si) };
+    PROCESS_INFORMATION pi; 
+    DWORD creationFlags = CREATE_NEW_CONSOLE;
+    si.cb = sizeof(STARTUPINFO); 
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    if(debug_tts) si.wShowWindow = SW_SHOW;
+
+    if(!CreateProcess(NULL,
+    const_cast<char*>(start_TTS_command.c_str()),
+    NULL,
+    NULL,
+    TRUE,
+    creationFlags,
+    NULL,
+    NULL,
+    &si,
+    &pi))
+    {
+        std::cout << "Error printing output process" << GetLastError() << std::endl;
+    }
+    
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+}
+
+PROCESS_INFORMATION start_whisper() {
+    std::string start_whisper_command = "cmd /C E:\\Proyectos\\AI\\llama.cpp\\WhisperModule\\MicrophoneCS.exe -m E:\\Proyectos\\AI\\models\\ggml-tiny.en.bin --device 1 -nt -nc";
+
+    STARTUPINFO si = { sizeof(si) };
+    PROCESS_INFORMATION pi; 
+    SECURITY_ATTRIBUTES saAttr;
+
+    // Create a pipe for the child process's stdout
+    saAttr.nLength = sizeof(saAttr);
+    saAttr.bInheritHandle = TRUE;
+    saAttr.lpSecurityDescriptor = NULL;
+
+    if(!CreatePipe(&whisper_process_stdoutRead, &whisper_process_stdoutWrite, &saAttr, 0))
+    {
+        std::cout << "Error creating pipe: " << GetLastError() << std::endl;
+    }
+    
+    si.cb = sizeof(STARTUPINFO); 
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = whisper_process_stdoutWrite;
+    si.hStdError = whisper_process_stdoutWrite;
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.dwFlags |= STARTF_USESTDHANDLES;
+
+    if(!CreateProcess(NULL,
+    const_cast<char*>(start_whisper_command.c_str()),
+    NULL,
+    NULL,
+    TRUE,
+    0,
+    NULL,
+    NULL,
+    &si,
+    &pi))
+    {
+        std::cout << "Error printing output process" << GetLastError() << std::endl;
+    }
+    
+    // Is this OK?
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(whisper_process_stdoutWrite);
+    return pi;
+}
+
+void stop_process(PROCESS_INFORMATION& process_info) {
+    if(process_info.hProcess == NULL)
+    {
+        return;
+    }
+
+    CloseHandle(whisper_process_stdoutRead);
+    
+    // Post a WM_QUIT to the window to stop the application
+    GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, process_info.dwProcessId);
+    WaitForSingleObject(process_info.hProcess, INFINITE);
+}
+
+bool has_over_and_out_been_whispered(std::string line)
+{
+    std::string line_lower = line;
+    std::transform(line_lower.begin(), line_lower.end(), line_lower.begin(), ::tolower);
+
+    /*std::ofstream outputFile("output.txt");
+    outputFile << "Line:" + line;
+    outputFile << "LineLower:" + line_lower;
+    outputFile.close();*/
+
+    if (line_lower.find("over and out") != std::string::npos) {
+        return true;
+    }
+    else {
+        return false;
+    }
+}
 
 int main(int argc, char ** argv) {
     gpt_params params;
@@ -133,11 +259,6 @@ int main(int argc, char ** argv) {
         llama_free(ctx);
 
         return 0;
-    }
-
-    if(params.debugtts)
-    {
-        debug_TTS = true;
     }
 
     std::string path_session = params.path_prompt_cache;
@@ -530,6 +651,7 @@ int main(int argc, char ** argv) {
 
         // if not currently processing queued inputs;
         if ((int) embd_inp.size() <= n_consumed) {
+            const bool    debug_tts       = params.debugtts;
 
             // check for reverse prompt
             if (params.antiprompt.size()) {
@@ -563,18 +685,6 @@ int main(int argc, char ** argv) {
             if (n_past > 0 && is_interacting) {
                 if(has_original_prompt_been_read)
                 {
-                    int numbers[] = {273, 267, 226, 241, 260, 298, 335, 293};
-                    int arraySize = sizeof(numbers) / sizeof(numbers[0]);
-
-                    // Seed the random number generator
-                    std::srand(static_cast<unsigned int>(std::time(nullptr)));
-
-                    // Generate a random index within the array bounds
-                    int randomIndex = std::rand() % arraySize;
-
-                    // Select a random number from the array
-                    int randomNumber = numbers[randomIndex];
-
                     // Replace "Flan-PC:" from AI_answer_to_TTS with ""
                     AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-PC:"), 8, "");
                     AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-Human:"), 11, "");
@@ -584,45 +694,15 @@ int main(int argc, char ** argv) {
                         return !(std::isalnum(c) || c == '?' || c == '!' || c == '.' || c == ',' || c == ' ' || c == '\'' || c == '-');
                     }), AI_answer_to_TTS.end());
 
-                    // Run tts --text "AI_answer_to_TTS" on powershell to hear the voice
-                    std::string generate_TTS_command = "cmd /C \"tts --text \"" + AI_answer_to_TTS + "\" --model_name \"tts_models/en/vctk/vits\" --speaker_idx p" + std::to_string(randomNumber);
-                    std::string play_TTS_command = "powershell -c (New-Object Media.SoundPlayer \".\\tts_output.wav\").PlaySync() ^| out-null\"";
-                    std::string full_command = generate_TTS_command + " && " + play_TTS_command;
-                    STARTUPINFO si = { sizeof(si) };
-                    si.dwFlags = STARTF_USESHOWWINDOW;
-                    si.wShowWindow = SW_HIDE;
-                    PROCESS_INFORMATION pi;
+                    start_tts(AI_answer_to_TTS, debug_tts);
+                    whisper_process_info = start_whisper();
 
-                    // This decides whether console output is shown or not
-                    if(debug_TTS)
-                    {
-                        std::cout << std::endl;
-                        CreateProcess(NULL, const_cast<char*>(full_command.c_str()), NULL, NULL, FALSE, NULL, NULL, NULL, &si, &pi);
-                        std::cout << std::endl;
-                    }
-                    else
-                    {
-                        CreateProcess(NULL, const_cast<char*>(full_command.c_str()), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
-                    }
-                    
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
                     AI_answer_to_TTS = "";
                 }
                 else
                 {
-                    // Run tts --text "AI_answer_to_TTS" on powershell to hear the voice
-                    std::string generate_TTS_command = "cmd /C \"tts --text \"I am ready to start\"";
-                    std::string play_TTS_command = "powershell -c (New-Object Media.SoundPlayer \".\\tts_output.wav\").PlaySync() ^| out-null\"";
-                    std::string full_command = generate_TTS_command + " && " + play_TTS_command;
-                    STARTUPINFO si = { sizeof(si) };
-                    si.dwFlags = STARTF_USESHOWWINDOW;
-                    si.wShowWindow = SW_HIDE;
-                    PROCESS_INFORMATION pi;
-                    CreateProcess(NULL, const_cast<char*>(full_command.c_str()), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
-
+                    start_tts("I am ready to start", debug_tts);
+                    whisper_process_info = start_whisper();
                     has_original_prompt_been_read = true;
                     AI_answer_to_TTS = "";
                 }
@@ -636,13 +716,29 @@ int main(int argc, char ** argv) {
                     buffer += params.input_prefix;
                     printf("%s", buffer.c_str());
                 }
+                
+                DWORD bytesRead = 0;
+                char whisper_line_buffer[128] = { 0 };
+                bool another_line = true;
 
-                std::string line;
+                fflush(con_st.out);
+                while(another_line && ReadFile(whisper_process_stdoutRead, whisper_line_buffer, sizeof(whisper_line_buffer) - 1, &bytesRead, NULL))
+                {
+                    whisper_line_buffer[bytesRead] = '\0'; // Ensure null-termination
+                    buffer.append(whisper_line_buffer, bytesRead);
+                    another_line = !has_over_and_out_been_whispered(buffer);
+                    std::cout << whisper_line_buffer;
+                }
+
+                stop_process(whisper_process_info);
+
+                /*std::string line;
                 bool another_line = true;
                 do {
                     another_line = console_readline(con_st, line);
                     buffer += line;
-                } while (another_line);
+                    //std::cout << line;
+                } while (another_line);*/
 
                 // done taking input, reset color
                 console_set_color(con_st, CONSOLE_COLOR_DEFAULT);
@@ -703,6 +799,7 @@ int main(int argc, char ** argv) {
         llama_save_session_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.size());
     }
 
+    stop_process(whisper_process_info);
     llama_print_timings(ctx);
     llama_free(ctx);
 
