@@ -17,6 +17,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <regex>
 
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
 #include <signal.h>
@@ -99,7 +100,7 @@ void start_tts(std::string text_to_read, bool debug_tts = false) {
 }
 
 PROCESS_INFORMATION start_whisper() {
-    std::string start_whisper_command = "cmd /C E:\\Proyectos\\AI\\llama.cpp\\WhisperModule\\MicrophoneCS.exe -m E:\\Proyectos\\AI\\models\\ggml-tiny.en.bin --device 1 -nt -nc";
+    std::string start_whisper_command = "cmd /C E:\\Proyectos\\AI\\llama.cpp\\WhisperModule\\MicrophoneCS.exe -m E:\\Proyectos\\AI\\models\\ggml-medium.en.bin --device 1 -nt -nc";
 
     STARTUPINFO si = { sizeof(si) };
     PROCESS_INFORMATION pi; 
@@ -153,8 +154,8 @@ void stop_process(PROCESS_INFORMATION& process_info) {
     CloseHandle(whisper_process_stdoutRead);
     
     // Post a WM_QUIT to the window to stop the application
-    GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, process_info.dwProcessId);
-    WaitForSingleObject(process_info.hProcess, INFINITE);
+    //GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, process_info.dwProcessId);
+    //WaitForSingleObject(process_info.hProcess, INFINITE);
 }
 
 bool has_over_and_out_been_whispered(std::string line)
@@ -162,17 +163,37 @@ bool has_over_and_out_been_whispered(std::string line)
     std::string line_lower = line;
     std::transform(line_lower.begin(), line_lower.end(), line_lower.begin(), ::tolower);
 
-    /*std::ofstream outputFile("output.txt");
-    outputFile << "Line:" + line;
-    outputFile << "LineLower:" + line_lower;
-    outputFile.close();*/
-
     if (line_lower.find("over and out") != std::string::npos) {
         return true;
     }
     else {
         return false;
     }
+}
+
+void sanitize_buffer(std::string &buffer)
+{
+    std::string buffer_str = buffer;
+    std::string buffer_str_lower = buffer_str;
+    std::transform(buffer_str_lower.begin(), buffer_str_lower.end(), buffer_str_lower.begin(), ::tolower);
+
+    if (buffer_str_lower.find("over and out") != std::string::npos) {
+        buffer_str = buffer_str.substr(0, buffer_str_lower.find("over and out"));
+    }
+
+    // Remove text between brackets, text between parenthesis, special characters and \r and \n.
+    buffer_str = std::regex_replace(buffer_str, std::regex("\\[.*?\\]"), "");
+    buffer_str = std::regex_replace(buffer_str, std::regex("\\(.*?\\)"), "");
+    buffer_str = std::regex_replace(buffer_str, std::regex("\\s+"), " ");
+    buffer_str = std::regex_replace(buffer_str, std::regex("\\r\\n|\\r|\\n"), "");
+
+    // Remove leading and trailing spaces
+    buffer_str = std::regex_replace(buffer_str, std::regex("^ +| +$|( ) +"), "$1");
+
+    // Append \n
+    buffer_str += "\n";
+
+    buffer = buffer_str;
 }
 
 int main(int argc, char ** argv) {
@@ -721,7 +742,6 @@ int main(int argc, char ** argv) {
                 char whisper_line_buffer[128] = { 0 };
                 bool another_line = true;
 
-                fflush(con_st.out);
                 while(another_line && ReadFile(whisper_process_stdoutRead, whisper_line_buffer, sizeof(whisper_line_buffer) - 1, &bytesRead, NULL))
                 {
                     whisper_line_buffer[bytesRead] = '\0'; // Ensure null-termination
@@ -731,6 +751,14 @@ int main(int argc, char ** argv) {
                 }
 
                 stop_process(whisper_process_info);
+
+                if (con_st.out != stdout) {
+                    fflush(stdout);
+                }
+
+                sanitize_buffer(buffer);
+
+                fflush(con_st.out); // Ensure all output is displayed before waiting for input
 
                 /*std::string line;
                 bool another_line = true;
