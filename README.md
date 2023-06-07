@@ -48,6 +48,12 @@ Inference of [LLaMA](https://arxiv.org/abs/2302.13971) model in pure C/C++
 
 ## Description
 
+<b>This is my own fork of llama.cpp for personal interest. I added coquiTTS for text to speech and whisper for voice recognition. While it is "possible" to have a spoken conversation, what I did is just a Frankenstein mash of three programs that, put together, work really slowly, at least on my PC. I reckon it will work slowly on any PC given how bad my implementation is anyways. As the cherry on top, it only works on Windows.
+<br/>
+<br/>
+I believe installing llama.cpp as explained below + installing <a target="_blank" href="https://github.com/coqui-ai/TTS">coqui-TTS</a> on Python should be enough to be able to run this.</b>
+
+
 The main goal of `llama.cpp` is to run the LLaMA model using 4-bit integer quantization on a MacBook
 
 - Plain C/C++ implementation without dependencies
