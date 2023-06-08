@@ -192,6 +192,7 @@ void sanitize_buffer(std::string &buffer)
 
     // Append \n
     buffer_str += "\n";
+    buffer_str += "\n";
 
     buffer = buffer_str;
 }
@@ -672,7 +673,9 @@ int main(int argc, char ** argv) {
 
         // if not currently processing queued inputs;
         if ((int) embd_inp.size() <= n_consumed) {
-            const bool    debug_tts       = params.debugtts;
+            const bool    debug_tts       = params.debug_tts;
+            const bool    enable_tts      = params.enable_tts;
+            const bool    enable_whisper  = params.enable_whisper;
 
             // check for reverse prompt
             if (params.antiprompt.size()) {
@@ -706,24 +709,28 @@ int main(int argc, char ** argv) {
             if (n_past > 0 && is_interacting) {
                 if(has_original_prompt_been_read)
                 {
-                    // Replace "Flan-PC:" from AI_answer_to_TTS with ""
-                    AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-PC:"), 8, "");
-                    AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-Human:"), 11, "");
+                    if(enable_tts)
+                    {
+                        // Replace "Flan-PC:" from AI_answer_to_TTS with ""
+                        //AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-PC:"), 8, "");
+                        //AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-Human:"), 11, "");
 
-                    // Sanitize AI_answer_to_TTS
-                    AI_answer_to_TTS.erase(std::remove_if(AI_answer_to_TTS.begin(), AI_answer_to_TTS.end(), [](unsigned char c) {
-                        return !(std::isalnum(c) || c == '?' || c == '!' || c == '.' || c == ',' || c == ' ' || c == '\'' || c == '-');
-                    }), AI_answer_to_TTS.end());
+                        // Sanitize AI_answer_to_TTS
+                        AI_answer_to_TTS.erase(std::remove_if(AI_answer_to_TTS.begin(), AI_answer_to_TTS.end(), [](unsigned char c) {
+                            return !(std::isalnum(c) || c == '?' || c == '!' || c == '.' || c == ',' || c == ' ' || c == '\'' || c == '-');
+                        }), AI_answer_to_TTS.end());
 
-                    start_tts(AI_answer_to_TTS, debug_tts);
-                    whisper_process_info = start_whisper();
+                        start_tts(AI_answer_to_TTS, debug_tts);
+                    }
+
+                    if(enable_whisper) whisper_process_info = start_whisper();
 
                     AI_answer_to_TTS = "";
                 }
                 else
                 {
-                    start_tts("I am ready to start", debug_tts);
-                    whisper_process_info = start_whisper();
+                    if(enable_tts) start_tts("I am ready to start", debug_tts);
+                    if(enable_whisper) whisper_process_info = start_whisper();
                     has_original_prompt_been_read = true;
                     AI_answer_to_TTS = "";
                 }
@@ -738,35 +745,39 @@ int main(int argc, char ** argv) {
                     printf("%s", buffer.c_str());
                 }
                 
-                DWORD bytesRead = 0;
-                char whisper_line_buffer[128] = { 0 };
-                bool another_line = true;
-
-                while(another_line && ReadFile(whisper_process_stdoutRead, whisper_line_buffer, sizeof(whisper_line_buffer) - 1, &bytesRead, NULL))
+                if(enable_whisper)
                 {
-                    whisper_line_buffer[bytesRead] = '\0'; // Ensure null-termination
-                    buffer.append(whisper_line_buffer, bytesRead);
-                    another_line = !has_over_and_out_been_whispered(buffer);
-                    std::cout << whisper_line_buffer;
+                    DWORD bytesRead = 0;
+                    char whisper_line_buffer[128] = { 0 };
+                    bool another_line = true;
+
+                    while(another_line && ReadFile(whisper_process_stdoutRead, whisper_line_buffer, sizeof(whisper_line_buffer) - 1, &bytesRead, NULL))
+                    {
+                        whisper_line_buffer[bytesRead] = '\0'; // Ensure null-termination
+                        buffer.append(whisper_line_buffer, bytesRead);
+                        another_line = !has_over_and_out_been_whispered(buffer);
+                        std::cout << whisper_line_buffer;
+                    }
+
+                    stop_process(whisper_process_info);
+
+                    if (con_st.out != stdout) {
+                        fflush(stdout);
+                    }
+
+                    sanitize_buffer(buffer);
+
+                    fflush(con_st.out); // Ensure all output is displayed before waiting for input
                 }
-
-                stop_process(whisper_process_info);
-
-                if (con_st.out != stdout) {
-                    fflush(stdout);
+                else
+                {
+                    std::string line;
+                    bool another_line = true;
+                    do {
+                        another_line = console_readline(con_st, line);
+                        buffer += line;
+                    } while (another_line);
                 }
-
-                sanitize_buffer(buffer);
-
-                fflush(con_st.out); // Ensure all output is displayed before waiting for input
-
-                /*std::string line;
-                bool another_line = true;
-                do {
-                    another_line = console_readline(con_st, line);
-                    buffer += line;
-                    //std::cout << line;
-                } while (another_line);*/
 
                 // done taking input, reset color
                 console_set_color(con_st, CONSOLE_COLOR_DEFAULT);

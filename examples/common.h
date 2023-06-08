@@ -74,7 +74,9 @@ struct gpt_params {
     bool verbose_prompt    = false; // print prompt tokens before generation
 
     // TTS parameters
-    bool debugtts          = false; // debug TTS generation
+    bool debug_tts         = false; // debug TTS generation
+    bool enable_tts        = false; // enable TTS
+    bool enable_whisper    = false; // enable Whisper
 };
 
 bool gpt_params_parse(int argc, char ** argv, gpt_params & params);

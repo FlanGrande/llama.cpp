@@ -108,3 +108,5 @@ CMakeFiles/3.26.4/CMakeRCCompiler.cmake
 CMakeFiles/3.26.4/CMakeCXXCompiler.cmake
 CMakeFiles/3.26.4/CMakeCCompiler.cmake
 examples/chat-with-vicuna.txt
+prompts/holiday-extras-test.txt
+prompts/test.txt

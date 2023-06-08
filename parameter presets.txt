@@ -1,0 +1,21 @@
+Precise:
+Good for: factual responses and straightforward assistant answers	
+repetition penalty: 1.176
+temperature: 0.7
+top_k: 40
+top_p: 0.1
+
+
+Creative:
+chatting, storywriting, and interesting assistant answers	
+repetition penalty: 1.1
+temperature: 0.72
+top_k: 0
+top_p: 0.73
+
+Sphinx:
+varied storywriting (on 30B/65B) and unconventional chatting
+repetition penalty: 1.15
+temperature: 1.99
+top_k: 30
+top_p: 0.18
