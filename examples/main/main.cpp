@@ -15,6 +15,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <string>
 #include <vector>
 #include <regex>
@@ -100,7 +101,7 @@ void start_tts(std::string text_to_read, bool debug_tts = false) {
 }
 
 PROCESS_INFORMATION start_whisper() {
-    std::string start_whisper_command = "cmd /C E:\\Proyectos\\AI\\llama.cpp\\WhisperModule\\MicrophoneCS.exe -m E:\\Proyectos\\AI\\models\\ggml-medium.en.bin --device 1 -nt -nc";
+    std::string start_whisper_command = "cmd /C E:\\Proyectos\\AI\\llama.cpp\\WhisperModule\\MicrophoneCS.exe -m E:\\Proyectos\\AI\\models\\ggml-tiny.en.bin --device 1 -nt -nc";
 
     STARTUPINFO si = { sizeof(si) };
     PROCESS_INFORMATION pi; 
@@ -153,9 +154,10 @@ void stop_process(PROCESS_INFORMATION& process_info) {
 
     CloseHandle(whisper_process_stdoutRead);
     
-    // Post a WM_QUIT to the window to stop the application
-    //GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, process_info.dwProcessId);
-    //WaitForSingleObject(process_info.hProcess, INFINITE);
+    // Terminate process
+    TerminateProcess(process_info.hProcess, 0);
+    CloseHandle(process_info.hProcess);
+    CloseHandle(process_info.hThread);
 }
 
 bool has_over_and_out_been_whispered(std::string line)
@@ -682,9 +684,10 @@ int main(int argc, char ** argv) {
 
         // if not currently processing queued inputs;
         if ((int) embd_inp.size() <= n_consumed) {
-            const bool    debug_tts       = params.debug_tts;
-            const bool    enable_tts      = params.enable_tts;
-            const bool    enable_whisper  = params.enable_whisper;
+            const bool                       debug_tts             = params.debug_tts;
+            const bool                       enable_tts            = params.enable_tts;
+            const std::string                tts_ignored_text      = params.tts_ignored_text;
+            const bool                       enable_whisper        = params.enable_whisper;
 
             // check for reverse prompt
             if (params.antiprompt.size()) {
@@ -720,9 +723,11 @@ int main(int argc, char ** argv) {
                 {
                     if(enable_tts)
                     {
-                        // Replace "Flan-PC:" from AI_answer_to_TTS with ""
-                        //AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-PC:"), 8, "");
-                        //AI_answer_to_TTS.replace(AI_answer_to_TTS.find("Flan-Human:"), 11, "");
+                        std::vector<std::string> antiprompt = params.antiprompt;
+                        std::string antiprompt_str = std::accumulate(antiprompt.begin(), antiprompt.end(), std::string(""));
+                        // Replace tts_ignored_text and antiprompt from AI_answer_to_TTS with ""
+                        AI_answer_to_TTS.replace(AI_answer_to_TTS.find(antiprompt_str), antiprompt_str.length(), "");
+                        AI_answer_to_TTS.replace(AI_answer_to_TTS.find(tts_ignored_text), tts_ignored_text.length(), "");
 
                         // Sanitize AI_answer_to_TTS
                         AI_answer_to_TTS.erase(std::remove_if(AI_answer_to_TTS.begin(), AI_answer_to_TTS.end(), [](unsigned char c) {
@@ -738,7 +743,7 @@ int main(int argc, char ** argv) {
                 }
                 else
                 {
-                    if(enable_tts) start_tts("I am ready to start", debug_tts);
+                    //if(enable_tts) start_tts("I am ready to start", debug_tts);
                     if(enable_whisper) whisper_process_info = start_whisper();
                     has_original_prompt_been_read = true;
                     AI_answer_to_TTS = "";

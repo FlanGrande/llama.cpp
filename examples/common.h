@@ -77,10 +77,10 @@ struct gpt_params {
     bool export_cgraph     = false; // export the computation graph
     bool verbose_prompt    = false; // print prompt tokens before generation
 
-    // TTS parameters
-    bool debug_tts         = false; // debug TTS generation
-    bool enable_tts        = false; // enable TTS
-    bool enable_whisper    = false; // enable Whisper
+    bool debug_tts                  = false; // debug TTS generation
+    bool enable_tts                 = false; // enable TTS
+    std::string tts_ignored_text    = ""; // Text ignored by TTS
+    bool enable_whisper             = false; // enable Whisper
 };
 
 bool gpt_params_parse(int argc, char ** argv, gpt_params & params);

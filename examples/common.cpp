@@ -285,11 +285,17 @@ bool gpt_params_parse(int argc, char ** argv, gpt_params & params) {
             params.multiline_input = true;
         } else if (arg == "--color") {
             params.use_color = true;
-        } else if (arg == "--debug-tts") {
+        } else if (arg == "--tts-debug") {
             params.debug_tts = true;
-        } else if (arg == "--enable-tts") {
+        } else if (arg == "--tts-enable") {
             params.enable_tts = true;
-        } else if (arg == "--enable-whisper") {
+        } else if (arg == "--tts-ignore") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.tts_ignored_text = argv[i];
+        } else if (arg == "--whisper-enable") {
             params.enable_whisper = true;
         } else if (arg == "--mlock") {
             params.use_mlock = true;
@@ -473,9 +479,10 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     fprintf(stderr, "  -b N, --batch-size N  batch size for prompt processing (default: %d)\n", params.n_batch);
     fprintf(stderr, "  --perplexity          compute perplexity over the prompt\n");
     fprintf(stderr, "  --keep                number of tokens to keep from the initial prompt (default: %d, -1 = all)\n", params.n_keep);
-    fprintf(stderr, "  --debug-tts           enables TTS console output to debug TTS voice generation (default: disabled)\n");
-    fprintf(stderr, "  --enable-tts          enables TTS voice generation to allow llama.cpp to speak (default: disabled)\n");
-    fprintf(stderr, "  --enable-whisper      enables Whisper STT to allow the user to speak to llama.cpp, only on Windows (default: disabled)\n");
+    fprintf(stderr, "  --tts-debug           enables TTS console output to debug TTS voice generation (default: disabled)\n");
+    fprintf(stderr, "  --tts-enable          enables TTS voice generation to allow llama.cpp to speak (default: disabled)\n");
+    fprintf(stderr, "  --tts-ignore STRING   if TTS is enabled, the text provided in this argument won't be read out loud. Useful to ignore names during a chat session.\n");
+    fprintf(stderr, "  --whisper-enable      enables Whisper STT to allow the user to speak to llama.cpp, only on Windows (default: disabled)\n");
     if (llama_mlock_supported()) {
         fprintf(stderr, "  --mlock               force system to keep model in RAM rather than swapping or compressing\n");
     }
