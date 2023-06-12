@@ -707,6 +707,9 @@ struct llama_model_loader {
 
     struct ggml_tensor * get_tensor_for(llama_load_tensor & lt, ggml_backend backend) {
         struct ggml_tensor * tensor;
+        if (backend != GGML_BACKEND_CPU) {
+            ggml_set_no_alloc(ggml_ctx, true);
+        }
         if (lt.ne.size() == 2) {
             tensor = ggml_new_tensor_2d(ggml_ctx, lt.type, lt.ne.at(0), lt.ne.at(1));
         } else {
@@ -716,6 +719,9 @@ struct llama_model_loader {
         ggml_set_name(tensor, lt.name.c_str());
         LLAMA_ASSERT(lt.ggml_tensor == NULL); // if this fails, we called get_tensor twice on the same tensor
 
+        if (backend != GGML_BACKEND_CPU) {
+            ggml_set_no_alloc(ggml_ctx, use_mmap);
+        }
         tensor->backend = backend;
         lt.ggml_tensor = tensor;
         num_ggml_tensors_created++;
@@ -731,6 +737,7 @@ struct llama_model_loader {
     void load_all_data(llama_progress_callback progress_callback, void *  progress_callback_user_data, llama_mlock * lmlock) {
         size_t data_size = 0;
         size_t prefetch_size = 0;
+        size_t lock_size = 0;
         for (const llama_load_tensor & lt : tensors_map.tensors) {
             data_size += lt.size;
             if (lt.ggml_tensor->backend == GGML_BACKEND_CPU) {
@@ -740,11 +747,6 @@ struct llama_model_loader {
 
         if (use_mmap) {
             mapping.reset(new llama_mmap(&file_loaders.at(0)->file, prefetch_size));
-            if (!lmlock) {
-                // Don't call the callback since the actual loading will be lazy
-                // and we can't measure it.
-                progress_callback = NULL;
-            }
             if (lmlock) {
                 lmlock->init(mapping->addr);
             }
@@ -752,20 +754,49 @@ struct llama_model_loader {
 
         size_t done_size = 0;
         for (llama_load_tensor & lt : tensors_map.tensors) {
-            if (lt.ggml_tensor->backend != GGML_BACKEND_CPU) {
-                continue;
-            }
             if (progress_callback) {
                 progress_callback((float) done_size / data_size, progress_callback_user_data);
             }
             LLAMA_ASSERT(lt.ggml_tensor); // unused tensors should have been caught by load_data already
             lt.data = (uint8_t *) lt.ggml_tensor->data;
-            load_data_for(lt);
-            lt.ggml_tensor->data = lt.data;
-            done_size += lt.size;
-            if (use_mmap && lmlock) {
-                lmlock->grow_to(done_size);
+
+            // allocate temp buffer if not using mmap
+            if (!use_mmap && lt.data == NULL) {
+                GGML_ASSERT(lt.ggml_tensor->backend != GGML_BACKEND_CPU);
+                lt.data = (uint8_t*)malloc(ggml_nbytes(lt.ggml_tensor));
             }
+
+            load_data_for(lt);
+
+            switch(lt.ggml_tensor->backend) {
+                case GGML_BACKEND_CPU:
+                    lt.ggml_tensor->data = lt.data;
+                    if (use_mmap && lmlock) {
+                        lock_size += lt.size;
+                        lmlock->grow_to(lock_size);
+                    }
+                    break;
+#if defined(GGML_USE_CUBLAS)
+                case GGML_BACKEND_GPU:
+                case GGML_BACKEND_GPU_SPLIT:
+                    ggml_cuda_transform_tensor(lt.data, lt.ggml_tensor);
+                    if (!use_mmap) {
+                        free(lt.data);
+                    }
+                    break;
+#elif defined(GGML_USE_CLBLAST)
+                case GGML_BACKEND_GPU:
+                    ggml_cl_transform_tensor(lt.data, lt.ggml_tensor);
+                    if (!use_mmap) {
+                        free(lt.data);
+                    }
+                    break;
+#endif
+                default:
+                    continue;
+            }
+
+            done_size += lt.size;
         }
     }
 
@@ -881,6 +912,17 @@ struct llama_context_params llama_context_default_params() {
         /*.embedding                   =*/ false,
         /*.progress_callback           =*/ nullptr,
         /*.progress_callback_user_data =*/ nullptr,
+    };
+
+    return result;
+}
+
+struct llama_model_quantize_params llama_model_quantize_default_params() {
+    struct llama_model_quantize_params result = {
+        /*.nthread                     =*/ 0,
+        /*.ftype                       =*/ LLAMA_FTYPE_MOSTLY_Q5_1,
+        /*.allow_requantize            =*/ false,
+        /*.quantize_output_tensor      =*/ true,
     };
 
     return result;
@@ -1130,7 +1172,7 @@ static void llama_model_load_internal(
             if (backend == GGML_BACKEND_GPU) {
                 vram_weights +=
                     ggml_nbytes(layer.attention_norm) + ggml_nbytes(layer.wq) + ggml_nbytes(layer.wk)             +
-                    ggml_nbytes(layer.wv)             + ggml_nbytes(layer.wo) + ggml_nbytes(layer.attention_norm) +
+                    ggml_nbytes(layer.wv)             + ggml_nbytes(layer.wo) + ggml_nbytes(layer.ffn_norm) +
                     ggml_nbytes(layer.w1)             + ggml_nbytes(layer.w2) + ggml_nbytes(layer.w3);
             }
         }
@@ -1185,57 +1227,13 @@ static void llama_model_load_internal(
         model.tensors_by_name.emplace_back(lt.name, lt.ggml_tensor);
     }
 
-    ml->load_all_data(progress_callback, progress_callback_user_data, use_mlock ? &lctx.model.mlock_mmap : NULL);
-
 #if defined(GGML_USE_CUBLAS)
     {
         ggml_cuda_set_tensor_split(tensor_split);
-
-        size_t done_size = 0;
-        size_t data_size = 0;
-        for (llama_load_tensor & lt : ml->tensors_map.tensors) {
-            data_size += lt.size;
-            if (lt.ggml_tensor->backend == GGML_BACKEND_CPU) {
-                done_size += lt.size;
-            }
-        }
-        for (llama_load_tensor & lt : ml->tensors_map.tensors) {
-            ggml_backend backend = lt.ggml_tensor->backend;
-            if (backend != GGML_BACKEND_GPU && backend != GGML_BACKEND_GPU_SPLIT) {
-                continue;
-            }
-            if (progress_callback) {
-                progress_callback((float) done_size / data_size, progress_callback_user_data);
-            }
-            ggml_cuda_load_data(fname.c_str(), lt.ggml_tensor, lt.shards.at(0).file_off);
-            done_size += lt.size;
-        }
     }
-#elif defined(GGML_USE_CLBLAST)
-    {
-        size_t done_size = 0;
-        size_t data_size = 0;
-        for (llama_load_tensor & lt : ml->tensors_map.tensors) {
-            data_size += lt.size;
-            if (lt.ggml_tensor->backend == GGML_BACKEND_CPU) {
-                done_size += lt.size;
-            }
-        }
-        for (llama_load_tensor & lt : ml->tensors_map.tensors) {
-            if (lt.ggml_tensor->backend != GGML_BACKEND_GPU) {
-                continue;
-            }
-            if (progress_callback) {
-                progress_callback((float) done_size / data_size, progress_callback_user_data);
-            }
-            ggml_cl_load_data(fname.c_str(), lt.ggml_tensor, lt.shards.at(0).file_off);
-            done_size += lt.size;
-        }
-    }
-#else
-    (void) n_batch;
-    (void) tensor_split;
 #endif
+
+    ml->load_all_data(progress_callback, progress_callback_user_data, use_mlock ? &lctx.model.mlock_mmap : NULL);
 
     if (progress_callback) {
         progress_callback(1.0f, progress_callback_user_data);
@@ -2231,9 +2229,70 @@ llama_token llama_sample_token(struct llama_context * ctx, llama_token_data_arra
 // quantization
 //
 
-static void llama_model_quantize_internal(const std::string & fname_inp, const std::string & fname_out, enum llama_ftype ftype, int nthread) {
+static void llama_convert_tensor_internal(const llama_load_tensor & tensor, llama_buffer & output, const int nelements, const int nthread) {
+    if (output.size < nelements * sizeof(float)) {
+        output.resize(nelements * sizeof(float));
+    }
+    float * f32_output = (float *) output.addr;
+
+    quantize_fns_t qtype;
+    if (ggml_is_quantized(tensor.type)) {
+        qtype = ggml_internal_get_quantize_fn(tensor.type);
+        if (qtype.dequantize_row_q == NULL) {
+            throw std::runtime_error(format("type %s unsupported for integer quantization: no dequantization available", ggml_type_name(tensor.type)));
+        }
+    } else if (tensor.type != GGML_TYPE_F16) {
+        throw std::runtime_error(format("cannot dequantize/convert tensor type %s", ggml_type_name(tensor.type)));
+    }
+
+    if (nthread < 2) {
+        if (tensor.type == GGML_TYPE_F16) {
+            ggml_fp16_to_fp32_row((ggml_fp16_t *)tensor.data, f32_output, nelements);
+        } else if (ggml_is_quantized(tensor.type)) {
+            qtype.dequantize_row_q(tensor.data, f32_output, nelements);
+        } else {
+            LLAMA_ASSERT(false); // unreachable
+        }
+        return;
+    }
+
+    auto block_size = tensor.type == GGML_TYPE_F16 ? 1 : (size_t)ggml_blck_size(tensor.type);
+    auto block_size_bytes = ggml_type_size(tensor.type);
+
+    LLAMA_ASSERT(nelements % block_size == 0);
+    auto nblocks = nelements / block_size;
+    auto blocks_per_thread = nblocks / nthread;
+    auto spare_blocks = nblocks - (blocks_per_thread * nthread); // if blocks aren't divisible by thread count
+
+    std::vector<std::thread> workers;
+    for (auto tnum = 0, in_buff_offs = 0, out_buff_offs = 0; tnum < nthread; tnum++) {
+        auto thr_blocks = blocks_per_thread + (tnum == nthread - 1 ? spare_blocks : 0); // num blocks for this thread
+        auto thr_elems = thr_blocks * block_size; // number of elements for this thread
+        auto thr_block_bytes = thr_blocks * block_size_bytes; // number of input bytes for this thread
+
+        auto compute = [qtype] (ggml_type typ, uint8_t * inbuf, float * outbuf, int nels) {
+            if (typ == GGML_TYPE_F16) {
+                ggml_fp16_to_fp32_row((ggml_fp16_t *)inbuf, outbuf, nels);
+            } else {
+                qtype.dequantize_row_q(inbuf, outbuf, nels);
+            }
+        };
+        workers.push_back(std::thread(compute, tensor.type, tensor.data + in_buff_offs, f32_output + out_buff_offs, thr_elems));
+        in_buff_offs += thr_block_bytes;
+        out_buff_offs += thr_elems;
+    }
+    for (auto & worker : workers) {
+        worker.join();
+    }
+
+}
+
+static void llama_model_quantize_internal(const std::string & fname_inp, const std::string & fname_out, const llama_model_quantize_params * params) {
     ggml_type quantized_type;
-    switch (ftype) {
+    llama_ftype ftype = params->ftype;
+    int nthread = params->nthread;
+
+    switch (params->ftype) {
         case LLAMA_FTYPE_MOSTLY_Q4_0: quantized_type = GGML_TYPE_Q4_0; break;
         case LLAMA_FTYPE_MOSTLY_Q4_1: quantized_type = GGML_TYPE_Q4_1; break;
         case LLAMA_FTYPE_MOSTLY_Q5_0: quantized_type = GGML_TYPE_Q5_0; break;
@@ -2259,7 +2318,7 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
 
     std::unique_ptr<llama_model_loader> model_loader(new llama_model_loader(fname_inp, /*use_mmap*/ false,
                                                                             /*vocab_only*/ false));
-    llama_file_saver file_saver(fname_out.c_str(), model_loader->file_loaders.at(0).get(), ftype);
+    llama_file_saver file_saver(fname_out.c_str(), model_loader->file_loaders.at(0).get(), params->ftype);
 
     int n_attention_wv    = 0;
     int n_feed_forward_w2 = 0;
@@ -2301,9 +2360,10 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
         quantize &= (tensor.ne.size() == 2);
 
         // uncomment this to keep the output layer in FP16
-        //if (tensor.name == "output.weight") {
-        //    quantize = false;
-        //}
+        if (!params->quantize_output_tensor && tensor.name == "output.weight") {
+           quantize = false;
+        }
+        quantize = quantize && quantized_type != tensor.type;
 
         enum ggml_type new_type;
         void * new_data;
@@ -2317,12 +2377,10 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
             printf("size = %8.3f MB\n", tensor.size/1024.0/1024.0);
         } else {
             new_type = quantized_type;
-            // TODO: temporary disabled until Metal / OpenCL support is available
-            //       ref: https://github.com/ggerganov/llama.cpp/issues/1711
-            //if (tensor.name == "output.weight") {
-            //    new_type = GGML_TYPE_Q6_K;
-            //}
-            if (tensor.name.find("attention.wv.weight") != std::string::npos) {
+            if (tensor.name == "output.weight") {
+                new_type = GGML_TYPE_Q6_K;
+            }
+            else if (tensor.name.find("attention.wv.weight") != std::string::npos) {
                 if      (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M || ftype == LLAMA_FTYPE_MOSTLY_Q2_K) new_type = GGML_TYPE_Q4_K;
                 else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L) new_type = GGML_TYPE_Q5_K;
                 else if ((ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M || ftype == LLAMA_FTYPE_MOSTLY_Q5_K_M) &&
@@ -2346,17 +2404,14 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
             float * f32_data;
             size_t nelements = tensor.ne.at(0) * tensor.ne.at(1);
             llama_buffer f32_conv_buf;
+
             if (tensor.type == GGML_TYPE_F32) {
                 f32_data = (float *) tensor.data;
-            } else if (tensor.type == GGML_TYPE_F16) {
-                f32_conv_buf.resize(nelements * sizeof(float));
-                f32_data = (float *) f32_conv_buf.addr;
-                const auto * f16_data = (const ggml_fp16_t *) tensor.data;
-                for (size_t i = 0; i < nelements; i++) {
-                    f32_data[i] = ggml_fp16_to_fp32(f16_data[i]);
-                }
+            } else if (ggml_is_quantized(tensor.type) && !params->allow_requantize) {
+                throw std::runtime_error(format("requantizing from type %s is disabled", ggml_type_name(tensor.type)));
             } else {
-                throw std::runtime_error(format("type %s unsupported for integer quantization", ggml_type_name(tensor.type)));
+                llama_convert_tensor_internal(tensor, f32_conv_buf, nelements, nthread);
+                f32_data = (float *) f32_conv_buf.addr;
             }
 
             printf("quantizing .. ");
@@ -2566,10 +2621,9 @@ void llama_free(struct llama_context * ctx) {
 int llama_model_quantize(
         const char * fname_inp,
         const char * fname_out,
-  enum llama_ftype   ftype,
-        int          nthread) {
+        const llama_model_quantize_params *params) {
     try {
-        llama_model_quantize_internal(fname_inp, fname_out, ftype, nthread);
+        llama_model_quantize_internal(fname_inp, fname_out, params);
         return 0;
     } catch (const std::exception & err) {
         fprintf(stderr, "%s: failed to quantize: %s\n", __func__, err.what());
