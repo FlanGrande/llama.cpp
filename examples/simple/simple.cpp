@@ -66,13 +66,14 @@ int main(int argc, char ** argv)
     // Init LLM :
     //---------------------------------
 
-    llama_init_backend();
+    llama_init_backend(params.numa);
 
-    llama_context * ctx ;
+    llama_model * model;
+    llama_context * ctx;
 
-    ctx = llama_init_from_gpt_params( params );
+    std::tie(model, ctx) = llama_init_from_gpt_params( params );
 
-    if ( ctx == NULL )
+    if ( model == NULL )
     {
         fprintf( stderr , "%s: error: unable to load model\n" , __func__ );
         return 1;
@@ -170,6 +171,7 @@ int main(int argc, char ** argv)
     } // wend of main loop
 
     llama_free( ctx );
+    llama_free_model( model );
 
     return 0;
 }

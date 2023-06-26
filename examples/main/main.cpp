@@ -256,14 +256,15 @@ int main(int argc, char ** argv) {
         params.prompt = gpt_random_prompt(rng);
     }
 
-    llama_init_backend();
+    llama_init_backend(params.numa);
 
+    llama_model * model;
     llama_context * ctx;
     g_ctx = &ctx;
 
     // load the model and apply lora adapter, if any
-    ctx = llama_init_from_gpt_params(params);
-    if (ctx == NULL) {
+    std::tie(model, ctx) = llama_init_from_gpt_params(params);
+    if (model == NULL) {
         fprintf(stderr, "%s: error: unable to load model\n", __func__);
         return 1;
     }
@@ -290,6 +291,7 @@ int main(int argc, char ** argv) {
 
         llama_print_timings(ctx);
         llama_free(ctx);
+        llama_free_model(model);
 
         return 0;
     }
@@ -298,6 +300,7 @@ int main(int argc, char ** argv) {
     if (params.export_cgraph) {
         llama_eval_export(ctx, "llama.ggml");
         llama_free(ctx);
+        llama_free_model(model);
 
         return 0;
     }
@@ -508,7 +511,7 @@ int main(int argc, char ** argv) {
             if ((int)embd.size() > max_embd_size) {
                 auto skipped_tokens = embd.size() - max_embd_size;
                 console_set_color(con_st, CONSOLE_COLOR_ERROR);
-                printf("<<input too long: skipped %" PRIu64 "  token%s>>", skipped_tokens, skipped_tokens != 1 ? "s" : "");
+                printf("<<input too long: skipped %zu token%s>>", skipped_tokens, skipped_tokens != 1 ? "s" : "");
                 console_set_color(con_st, CONSOLE_COLOR_DEFAULT);
                 fflush(stdout);
                 embd.resize(max_embd_size);
@@ -884,6 +887,7 @@ int main(int argc, char ** argv) {
     stop_process(whisper_process_info);
     llama_print_timings(ctx);
     llama_free(ctx);
+    llama_free_model(model);
 
     return 0;
 }
